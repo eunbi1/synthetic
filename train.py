@@ -17,7 +17,7 @@ from torch.utils.data import DataLoader, TensorDataset
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
-def train(alpha, train_data, noise_mode, label_mode,  max_iter, dimension=2):
+def train(alpha, train_data, noise_mode, label_mode,  max_iter, dimension=2, condition=False):
     """
     noise mode: isotropic, independent
     label_model: fDSM, ReLES
@@ -28,7 +28,7 @@ def train(alpha, train_data, noise_mode, label_mode,  max_iter, dimension=2):
     sde = VPSDE(alpha, beta_min=0.1, beta_max=20,  schedule='cosine')
     levy = LevyStable()
 
-    score_model = ScoreNetwork(alpha, dimension=dimension)
+    score_model = ScoreNetwork(alpha, dimension=dimension, condition=condition)
     score_model.to(device)
     optimizer = torch.optim.Adam(score_model.parameters(), amsgrad=True)
     score_model.train()
@@ -43,8 +43,13 @@ def train(alpha, train_data, noise_mode, label_mode,  max_iter, dimension=2):
         avg_loss = 0.
         num_items = 0
 
-        for i, x in enumerate(dataloader):
-            x = x[0].to(device)
+        for i, data in enumerate(dataloader):
+        
+            x = data[0][:,:-1].to(device)
+            y = data[0][:,-1].to(device)
+
+
+
             n = x.size(0)
             if noise_mode == "isotropic":
                 e = levy.sample(alpha, 0, size=x.shape, is_isotropic=True, clamp=10).to(device)
@@ -53,8 +58,10 @@ def train(alpha, train_data, noise_mode, label_mode,  max_iter, dimension=2):
             elif noise_mode == 'gaussian':
                 e = torch.randn(size = x.shape).to(device)
             t = torch.rand(x.shape[0]).to(device)*(sde.T-0.00001)+0.00001
+            if condition == False:
+                y= None
 
-            loss = score_loss(score_model, sde, x, t, e, label_mode)
+            loss = score_loss(score_model, sde, x, y, t, e, label_mode)
             optimizer.zero_grad()
             loss.backward()
             torch.nn.utils.clip_grad_norm_(score_model.parameters(), 1.0)

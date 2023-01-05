@@ -5,7 +5,9 @@ from torchlevy import fitting_gen_gaussian_score
 
 def score_loss(model, sde,
                x0: torch.Tensor,
+               y,
                t: torch.LongTensor,
+
                e: torch.Tensor,
                label_mode
                ):
@@ -19,7 +21,7 @@ def score_loss(model, sde,
     elif label_mode == "ReELS":
         score =generalized_gaussian_score(e,sde.alpha)
 
-    output = model(x_t, t.float())
+    output = model(x_t, y,t.float())
 
     weight = output - score
     loss =  (weight).square().sum(dim=(1)).mean(dim=0)

@@ -24,12 +24,14 @@ def gamma_func(x):
 
 levy =LevyStable()
 def ddim_score_update2(score_model, alpha, x_s, s, t, h=5, clamp=10, device='cuda', mode='approximation',
-                       order=0, noise_mode = "isotropic", label_mode = 'fDSM'):
+                       order=0, noise_mode = "isotropic", label_mode = 'fDSM', y=None):
     sde = VPSDE(alpha, schedule='cosine')
+    if  y is not None:
+        y = torch.ones((x_s.shape[0],))*y
     if label_mode =='gaussian':
-        score_s = score_model(x_s, s) * torch.pow(sde.marginal_std(s) + 1e-5, -(1))[:, None]
+        score_s = score_model(x_s,y, s) * torch.pow(sde.marginal_std(s) + 1e-5, -(1))[:, None]
     else:
-     score_s = score_model(x_s, s) * torch.pow(sde.marginal_std(s)+1e-5, -(alpha - 1))[:, None]
+     score_s = score_model(x_s,y, s) * torch.pow(sde.marginal_std(s)+1e-5, -(alpha - 1))[:, None]
 
     time_step = s - t
     beta_step = sde.beta(s) * time_step
@@ -38,9 +40,9 @@ def ddim_score_update2(score_model, alpha, x_s, s, t, h=5, clamp=10, device='cud
     levy = LevyStable()
 
     if noise_mode == "isotropic":
-        e_L = levy.sample(alpha, 0, size=x_s.shape, is_isotropic=True, clamp=10)
+        e_L = levy.sample(alpha, 0, size=x_s.shape, is_isotropic=True, clamp=20)
     elif noise_mode == "independent":
-        e_L = torch.clamp(levy.sample(alpha, 0, size=x_s.shape, is_isotropic=False), -10, 10)
+        e_L = torch.clamp(levy.sample(alpha, 0, size=x_s.shape, is_isotropic=False), -20, 20)
     elif noise_mode == 'gaussian':
         e_L = torch.randn(size = x_s.shape)*np.sqrt(2)
     # print('no', torch.max(torch.pow(beta_step, 1 / alpha)))
@@ -66,7 +68,7 @@ def pc_sampler2(score_model,
                 batch_size=50000,
                 num_steps=1000,
                 show_image=True,
-                noise_mode = "isotropic", label_mode = 'fDSM'):
+                noise_mode = "isotropic", label_mode = 'fDSM',y=None):
     alpha = score_model.alpha
     dimension = score_model.dimension
     sde = VPSDE(alpha,  schedule='cosine')
@@ -75,9 +77,9 @@ def pc_sampler2(score_model,
 
     levy = LevyStable()
     if noise_mode == "isotropic":
-        e_L = levy.sample(alpha, 0, size=(batch_size, dimension), is_isotropic=True, clamp=10)
+        e_L = levy.sample(alpha, 0, size=(batch_size, dimension), is_isotropic=True, clamp=20)
     elif noise_mode == "independent":
-        e_L = torch.clamp(levy.sample(alpha, 0, size=(batch_size, dimension), is_isotropic=False), -10, 10)
+        e_L = torch.clamp(levy.sample(alpha, 0, size=(batch_size, dimension), is_isotropic=False), -20, 20)
     elif noise_mode == 'gaussian':
         e_L = torch.randn(size =(batch_size, dimension))*np.sqrt(2)
 
@@ -91,20 +93,19 @@ def pc_sampler2(score_model,
     data = []
     ts = []
     steps = []
+    trajectory = [x_s]
     with torch.no_grad():
         for i, t in enumerate(time_steps[1:]):
 
             batch_time_step_t = torch.ones(x_s.shape[0]) * t
 
-            x_s = ddim_score_update2(score_model, alpha, x_s, batch_time_step_s, batch_time_step_t,noise_mode = noise_mode, label_mode = label_mode)
+            x_s = ddim_score_update2(score_model, alpha, x_s, batch_time_step_s, batch_time_step_t,
+                                     noise_mode = noise_mode, label_mode = label_mode, y=None)
 
-
+            trajectory.append(x_s)
             batch_time_step_s = batch_time_step_t
-    #
-    # if show_image:
-    #     data = np.stack(data)
-    #     jointplots(data[:, :1000], score_model.cpu(), ts=ts, steps=steps)
-    return e_L, x_s
+    trajectory = torch.stack(trajectory,dim=1)
+    return e_L, x_s, trajectory
 
 
 def ode_score_update(score_model, sde, x_s, s, t, h=0.6, clamp=10):
@@ -135,9 +136,9 @@ def ode_sampler(score_model,
 
     levy = LevyStable()
     if noise_mode == "isotropic":
-        e_L = levy.sample(alpha, 0, size=(batch_size, dimension), is_isotropic=True, clamp=10)
+        e_L = levy.sample(alpha, 0, size=(batch_size, dimension), is_isotropic=True, clamp=20)
     elif noise_mode == "independent":
-        e_L = torch.clamp(levy.sample(alpha, 0, size=(batch_size, dimension), is_isotropic=False), -10, 10)
+        e_L = torch.clamp(levy.sample(alpha, 0, size=(batch_size, dimension), is_isotropic=False), -20, 20)
     elif noise_mode == 'gaussian':
         e_L = torch.randn(size =(batch_size, dimension))*np.sqrt(2)
     x_s = e_L
@@ -192,11 +193,18 @@ def plt_marginal_density(score_model, ax, npts=1000, memory=5000, title="q0(x)",
         ax.imshow(px, cmap='inferno')
 from prdc import compute_prdc
 
+import matplotlib.pyplot as plt
 
+def get_cmap(n, name='hsv'):
+    '''Returns a function that maps each index in 0, 1, ..., n-1 to a distinct
+    RGB color; the keyword argument name must be a standard mpl colormap name.'''
+    return plt.cm.get_cmap(name, n)
 
-def runner(alpha,  dataset= "swiss roll",train_max_iter=100,batch_size=5000,
+from matplotlib.lines import Line2D
+def runner(alpha,  dataset= "swiss roll",train_max_iter=100,batch_size=9,
            max_iter=100, noise_mode="isotropic", label_mode = "fDSM",dimension=2 ,ratio=4,
-           sampler = 'ode_sampler', mode=2):
+           sampler = 'ode_sampler', mode=2,
+           condition = False, y= None):
     dir_path = dataset
     dir_path = os.path.join('/scratch/private/eunbiyoon/LIM-synthetic-data', dir_path)
     datasets = get_data(dataset, dimension=dimension,f=ratio)
@@ -221,14 +229,16 @@ def runner(alpha,  dataset= "swiss roll",train_max_iter=100,batch_size=5000,
     total_distance = 0
 
     score_model = train(alpha, train_dataset,
-                            noise_mode=noise_mode, label_mode = label_mode, max_iter = train_max_iter, dimension =dimension)
+                            noise_mode=noise_mode, label_mode = label_mode,
+                        max_iter = train_max_iter, dimension =dimension, condition=condition)
     for e in range(max_iter):
         if sampler == "pc_sampler2":
-            e_L, sample = pc_sampler2(score_model,
+            e_L, sample, trajectory= pc_sampler2(score_model,
                              score_check_steps=[0, 500, 800, 999],
                              batch_size=batch_size,
                              num_steps=1000,
-                             show_image=True, noise_mode = noise_mode, label_mode = label_mode)
+                             show_image=True, noise_mode = noise_mode, label_mode = label_mode,
+                             y=y)
         elif sampler == "ode_sampler":
             e_L, sample = ode_sampler(score_model,
                              score_check_steps=[0, 500, 800, 999],
@@ -236,41 +246,29 @@ def runner(alpha,  dataset= "swiss roll",train_max_iter=100,batch_size=5000,
                              num_steps=20,
                              show_image=True, noise_mode = noise_mode, label_mode = label_mode)
         e_L = e_L.cpu().numpy()
+        trajectory = trajectory.cpu().numpy()
         sample = sample.cpu().numpy()
         sample = np.nan_to_num(sample)
 
-        distance = ot.sliced_wasserstein_distance(testset, sample, n_projections=10, seed=0)
+
+        distance = ot.sliced_wasserstein_distance(testset[:,:-1], sample, n_projections=10, seed=0)
         total_distance += distance
-        fid = calculate_fid(sample, testset,dimension=dimension)
-        metrics = compute_prdc(real_features=testset,
-                               fake_features=sample,
-                               nearest_k=5)
+        fid = calculate_fid(sample, testset[:,:-1],dimension=dimension)
+        # metrics = compute_prdc(real_features=testset,
+        #                        fake_features=sample,
+        #                        nearest_k=5)
 
 
-        print(metrics)
-        precision = metrics['precision']
-        P.append(precision)
-        recall = metrics['recall']
-        R.append(recall)
-        density = metrics['density']
-        D.append(density)
-        coverage = metrics['coverage']
-        C.append(coverage)
+
         F.append(fid)
         f = np.array(F)
-        p= np.array(P)
-        r = np.array(R)
-        d = np.array(D)
-        c = np.array(C)
+
         ra = np.array(Ra)
 
         average_fid = np.mean(f)
         variance = np.var(f)
 
-        average_precision = np.mean(p)
-        average_recall = np.mean(r)
-        average_density = np.mean(d)
-        average_coverage = np.mean(c)
+
         if dimension == 2:
             gm = GaussianMixture(n_components=mode, random_state=0).fit(sample)
             labels = gm.predict(sample)
@@ -281,24 +279,40 @@ def runner(alpha,  dataset= "swiss roll",train_max_iter=100,batch_size=5000,
             else:
                 predict_f = b / a
             Ra.append(predict_f)
+            ra = np.array(Ra)
             average_ratio = np.mean(ra)
         print(f'Alpha{alpha}, Average FID:{average_fid}, Variance: {variance}, distance: {total_distance}')
 
     F = np.array(F)
     average_fid = np.mean(F)
     variance = np.var(F)
-    print(f'Alpha{alpha}, FID:{average_fid}, Variance: {variance}')
+    print(f'Alpha{alpha}, FID:{average_fid}, Variance: {variance} ratio{ratio} predict:{average_ratio:.1f}')
     if dimension >1:
         X = sample[:,0]
         Y = sample[:,1]
-
+        fig = plt.figure()
+        ax = fig.add_subplot(111)
         plt.scatter(X, Y, s=1, label = f' ratio{ratio},Alpha{alpha} predict:{average_ratio:.1f}var:{variance:.4f}FID:{average_fid:.4f}distance: {total_distance/3/(e+1):.4f}')
-        plt.scatter(e_L[:, 0], e_L[:, 1], s=1, alpha=0.1, label=f'pre{average_precision:.4f}, rec{average_recall:.4f}, den{average_density:.4f}, cov{average_coverage:.4f}', c='black')
-        plt.scatter(testset[:,0], testset[:,1], s=1, label=f'testset', alpha=0.1,c='red')
+
+
+
+
+        plt.scatter(trajectory[:,0,0], trajectory[:,0,1], s=1, c='red',alpha=0.5)
+        plt.scatter(trajectory[:,-1, 0], trajectory[:,-1, 1], s=1, c='blue', alpha=0.5)
+        cmap = get_cmap(len(trajectory))
+        print('shape', np.shape(trajectory))
+        for i in tqdm.tqdm(range(int(batch_size))):
+            #c = cmap(i))
+            ax.add_line(Line2D(trajectory[i, :, 0], trajectory[i, :, 1], alpha=0.1,c = cmap(i)))
+            plt.scatter(trajectory[i, :, 0], trajectory[i, :, 1], s=0.02, c='black', alpha=0.5)
+        #
+        # plt.scatter(e_L[:, 0], e_L[:, 1], s=1, alpha=0.1, label=f'pre{average_precision:.4f}, rec{average_recall:.4f}, den{average_density:.4f}, cov{average_coverage:.4f}', c='black')
+        plt.scatter(testset[:,0], testset[:,1], s=1, label=f'testset', alpha=0.03,c='black')
         plt.xlim(x_min, x_max)
         plt.ylim(x_min, x_max)
         plt.axis('equal')
-        plt.legend(loc='lower right')
+
+        # plt.legend(loc='lower right')
 
     elif dimension==1:
         gm = GaussianMixture(n_components=3, random_state=0).fit(testset)
@@ -309,9 +323,13 @@ def runner(alpha,  dataset= "swiss roll",train_max_iter=100,batch_size=5000,
         ax.legend(loc='upper right')
 
     name = sampler+ str(ratio)+'frac'+str(dimension)+ label_mode+''+noise_mode+dataset+str(alpha)+'.png'
+    if condition==True:
+        name = 'condition'+name
     name = os.path.join(dir_path, name)
     #plt_marginal_density(score_model, ax, name=name, dim=dimension, noise_mode=noise_mode)
-    plt.savefig(name, dpi=500)
+
+    plt.savefig(name)
+
     plt.cla()
     plt.clf()
     #
@@ -378,14 +396,14 @@ def sample(alpha, path="/scratch/private/eunbiyoon/LIM-synthetic-data/10_fDSM__i
 #     for dataset in ["mixture of gaussian"]:
 #         runner(alpha, dataset=dataset, train_max_iter= train_max_iter,dimension = dimension,
 #                max_iter=max_iter, noise_mode=noise_mode, label_mode=label_mode)
-train_max_iter=5000
-max_iter=10
-fraction = [10,20,40,80,100]
-
+train_max_iter=1000
+max_iter=1
+condition = True
+y=1
+fraction = [10]
 for dimension in [2]:
-
- for alpha, label_mode, noise_mode in [(1.5, 'fDSM', 'independent'), (1.5, 'fDSM', 'isotropic'),(1.8, 'fDSM', 'independent'), (1.8, 'fDSM', 'isotropic'),
-                                       ]:
+#,(1.8, 'fDSM', 'independent'), (1.8, 'fDSM', 'isotropic'),
+ for alpha, label_mode, noise_mode in [(2.0, 'fDSM', 'isotropic'), (1.5, 'fDSM', 'isotropic')]:
   for dataset in ["mixture of gaussian"]:
     F = []
     for ratio in fraction:
@@ -397,14 +415,42 @@ for dimension in [2]:
          pass
      fid = runner(alpha, dataset=dataset, train_max_iter=train_max_iter, dimension=dimension,
                       max_iter=max_iter, noise_mode=noise_mode, label_mode=label_mode, ratio=ratio,
-                  sampler = "pc_sampler2")
-     # F.append(fid)
+                  sampler = "pc_sampler2", condition=condition, y= y)
+
      name = 'fid' + str(dimension) + label_mode + '' + noise_mode + dataset + str(alpha) + '.png'
+     if condition == True:
+         name = 'condition'+name
      name = os.path.join("/scratch/private/eunbiyoon/LIM-synthetic-data/dataset", name)
-     # plt.show()
-     # # # plt.plot(fraction, F)
-     # # plt.legend(loc='upper right')
-     # # plt.savefig(name, dpi=500)
+     plt.savefig(name, dpi=500)
+
+train_max_iter=1000
+max_iter=1
+condition = False
+y=None
+fraction = [10]
+for dimension in [2]:
+#,(1.8, 'fDSM', 'independent'), (1.8, 'fDSM', 'isotropic'),
+ for alpha, label_mode, noise_mode in [(2.0, 'fDSM', 'isotropic'), (1.5, 'fDSM', 'isotropic')]:
+  for dataset in ["mixture of gaussian"]:
+    F = []
+    for ratio in fraction:
+     if dataset== 'mog':
+         dimension=1
+     elif dataset == 'checkerboard':
+         dimension=2
+     else:
+         pass
+     fid = runner(alpha, dataset=dataset, train_max_iter=train_max_iter, dimension=dimension,
+                      max_iter=max_iter, noise_mode=noise_mode, label_mode=label_mode, ratio=ratio,
+                  sampler = "pc_sampler2", condition=condition, y= y)
+
+     name = 'fid' + str(dimension) + label_mode + '' + noise_mode + dataset + str(alpha) + '.png'
+     if condition == True:
+         name = 'condition'+name
+     name = os.path.join("/scratch/private/eunbiyoon/LIM-synthetic-data/dataset", name)
+     plt.savefig(name, dpi=500)
+
+
 # for dimension in [2,10]:
 #  for alpha, label_mode, noise_mode in [(2.0, 'gaussian', 'gaussian')]:
 #   F=[]
