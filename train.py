@@ -56,7 +56,7 @@ def train(alpha, train_data, noise_mode, label_mode,  max_iter, dimension=2, con
             elif noise_mode == "independent":
                 e = torch.clamp(levy.sample(alpha, 0, size=x.shape, is_isotropic=False),-10,10).to(device)
             elif noise_mode == 'gaussian':
-                e = torch.randn(size = x.shape).to(device)
+                e = torch.randn(size = x.shape).to(device)*np.sqrt(2)
             t = torch.rand(x.shape[0]).to(device)*(sde.T-0.00001)+0.00001
             if condition == False:
                 y= None
